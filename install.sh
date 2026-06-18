@@ -362,6 +362,9 @@ resolve_paths() {
     if ! is_wsl && [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ] && ! command -v zenity >/dev/null 2>&1; then
         ensure_cmd zenity zenity || true
     fi
+    # An explicit --server/--client flag overrides whatever load_config restored.
+    [ -n "$PRESET_SERVER" ] && SERVER="$PRESET_SERVER"
+    [ -n "$PRESET_CLIENT" ] && CLIENT="$PRESET_CLIENT"
     if ! { [ -n "$SERVER" ] && [ -d "$SERVER/modules" ]; }; then
         if [ -z "$PRESET_SERVER" ]; then
             explain_pick "Where is your AzerothCore SERVER? Select its root folder — the one that contains 'modules':" \
