@@ -32,6 +32,10 @@ The first menu option is **Everything**. Or pick a subset:
 
 ## What it does
 
+It opens with a **colored status overview** of what you already have — each piece
+shown as `Installed` (green), `Update Available` (blue), `Not Installed` (gray), or
+`Local Changes` (gold) — then:
+
 1. Auto-installs missing prerequisites (`git`, and `python3` + `pympq` if a patch
    needs building; `zenity` for the picker on Linux).
 2. Clones the selected modules into `<server>/modules/`.

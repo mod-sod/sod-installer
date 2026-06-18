@@ -44,8 +44,10 @@ PATCH_PY=""
 if [ -t 1 ]; then
     c_reset=$'\033[0m'; c_info=$'\033[1;36m'; c_warn=$'\033[1;33m'
     c_err=$'\033[1;31m'; c_ok=$'\033[1;32m'
+    c_blue=$'\033[1;34m'; c_gray=$'\033[90m'; c_gold=$'\033[38;5;220m'
 else
     c_reset=""; c_info=""; c_warn=""; c_err=""; c_ok=""
+    c_blue=""; c_gray=""; c_gold=""
 fi
 log()  { printf '%s::%s %s\n' "$c_info" "$c_reset" "$*"; }
 ok()   { printf '%s ✓%s %s\n' "$c_ok" "$c_reset" "$*"; }
@@ -128,6 +130,7 @@ resolve_path() {
 
 # ── components ───────────────────────────────────────────────────────────────
 choose_components() {
+    SEL_RUNE=0; SEL_WORLD=0; SEL_MAGE=0
     if [ -n "$PRESET_COMPONENTS" ]; then
         case ",$PRESET_COMPONENTS," in *,all,*) SEL_RUNE=1; SEL_WORLD=1; SEL_MAGE=1 ;; esac
         case ",$PRESET_COMPONENTS," in *,rune,*)  SEL_RUNE=1  ;; esac
@@ -275,8 +278,6 @@ load_config() {
     return 0
 }
 
-needs_client() { [ "$SEL_RUNE" -eq 1 ] || [ "$SEL_WORLD" -eq 1 ] || [ "$SEL_MAGE" -eq 1 ]; }
-
 # ── next steps ───────────────────────────────────────────────────────────────
 print_next_steps() {
     echo
@@ -297,47 +298,125 @@ print_next_steps() {
     echo "  Re-run with --update any time to pull the latest and rebuild the patches."
 }
 
-# ── flows ────────────────────────────────────────────────────────────────────
-do_install() {
-    choose_components
-    ensure_cmd git
+# ── status overview ──────────────────────────────────────────────────────────
+clear_screen() { if command -v clear >/dev/null 2>&1; then clear; else printf '\033[2J\033[3J\033[H'; fi; }
+
+print_banner() {
+    printf '%s════════════════════════════════════════════════════════════%s\n' "$c_info" "$c_reset"
+    printf '%s  Season of Discovery — module & addon installer%s\n' "$c_info" "$c_reset"
+    printf '   %s%s%s\n' "$c_gray" "$( is_wsl && echo 'WSL' || echo 'Linux' )$( [ "$DRY_RUN" -eq 1 ] && echo '  ·  dry-run' )" "$c_reset"
+    printf '%s════════════════════════════════════════════════════════════%s\n\n' "$c_info" "$c_reset"
+}
+
+# repo_status <git-dir> → echoes: notinstalled | installed | update | local
+repo_status() {
+    local dir="$1" head remote base
+    [ -d "$dir/.git" ] || { echo notinstalled; return; }
+    [ -z "$(git -C "$dir" status --porcelain 2>/dev/null)" ] || { echo local; return; }
+    git -C "$dir" fetch --quiet origin "$BRANCH" 2>/dev/null || { echo installed; return; }
+    head="$(git -C "$dir" rev-parse HEAD 2>/dev/null)"
+    remote="$(git -C "$dir" rev-parse FETCH_HEAD 2>/dev/null)" || { echo installed; return; }
+    base="$(git -C "$dir" merge-base HEAD FETCH_HEAD 2>/dev/null)"
+    if   [ "$head" = "$remote" ]; then echo installed
+    elif [ "$head" = "$base"   ]; then echo update
+    else echo local
+    fi
+}
+
+print_status_row() { # <name> <status>
+    local name="$1" st="$2" label color
+    case "$st" in
+        installed)    label="Installed";        color="$c_ok"   ;;
+        update)       label="Update Available"; color="$c_blue" ;;
+        notinstalled) label="Not Installed";    color="$c_gray" ;;
+        local)        label="Local Changes";    color="$c_gold" ;;
+    esac
+    printf '  %-26s %s%s%s\n' "$name" "$color" "$label" "$c_reset"
+}
+
+show_status() {
+    echo "Current install status:"
+    print_status_row "Rune Engraving (engine)" "$(repo_status "$SERVER/modules/mod-rune-engraving")"
+    print_status_row "RuneEngraver addon"      "$(repo_status "$(addons_dir)/RuneEngraver")"
+    print_status_row "SoD World"               "$(repo_status "$SERVER/modules/mod-sod-world")"
+    print_status_row "SoD Mage"                "$(repo_status "$SERVER/modules/mod-sod-mage")"
+    echo
+}
+
+# explain_pick <title-line> <tree-line>...  — describe what folder we want and
+# show the expected layout with an arrow at the folder to select, then pause so
+# the picker doesn't pop up unannounced.
+explain_pick() {
+    local title="$1"; shift
+    echo
+    printf '%s%s%s\n' "$c_info" "$title" "$c_reset"
+    local line
+    for line in "$@"; do printf '   %s\n' "$line"; done
+    echo
+    if [ -t 0 ]; then read -r -p "Press Enter to open the folder picker… " _ || true; fi
+}
+
+# Resolve the server + client paths (saved config or the picker) up front, so the
+# status check can inspect both the modules and the addon.
+resolve_paths() {
     if ! is_wsl && [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ] && ! command -v zenity >/dev/null 2>&1; then
         ensure_cmd zenity zenity || true
     fi
-    resolve_path SERVER "$PRESET_SERVER" "Select your AzerothCore server root (folder that contains modules)" "modules"
-    if needs_client; then
-        resolve_path CLIENT "$PRESET_CLIENT" "Select your WoW 3.3.5a client root (folder that contains Data and Interface)" "Data"
+    if ! { [ -n "$SERVER" ] && [ -d "$SERVER/modules" ]; }; then
+        if [ -z "$PRESET_SERVER" ]; then
+            explain_pick "Where is your AzerothCore SERVER? Select its root folder — the one that contains 'modules':" \
+                "${c_gray}# the WoW emulator source tree${c_reset}" \
+                "azeroth-server/        ${c_ok}<- select this folder${c_reset}" \
+                "├── apps/" \
+                "├── src/" \
+                "└── modules/"
+        fi
+        resolve_path SERVER "$PRESET_SERVER" "Select your AzerothCore server root (the folder that contains modules)" "modules"
     fi
-    save_config
+    if ! { [ -n "$CLIENT" ] && [ -d "$CLIENT/Data" ]; }; then
+        if [ -z "$PRESET_CLIENT" ]; then
+            explain_pick "Where is your WoW 3.3.5a CLIENT? Select its root folder — the one that contains 'Data' and 'Interface':" \
+                "${c_gray}# your 3.3.5a client install${c_reset}" \
+                "World of Warcraft/      ${c_ok}<- select this folder${c_reset}" \
+                "├── Wow.exe" \
+                "├── Data/             ${c_gray}# patch MPQs go here${c_reset}" \
+                "└── Interface/        ${c_gray}# the addon goes here${c_reset}"
+        fi
+        resolve_path CLIENT "$PRESET_CLIENT" "Select your WoW 3.3.5a client root (the folder that contains Data and Interface)" "Data"
+    fi
+}
 
+startup() {
+    [ "$DRY_RUN" -eq 1 ] || clear_screen
+    print_banner
+    ensure_cmd git
+    load_config || true
+    resolve_paths
+    save_config          # persist paths now, so exiting later still remembers them
+    [ "$DRY_RUN" -eq 1 ] || { clear_screen; print_banner; }
+    show_status
+}
+
+# ── flows ────────────────────────────────────────────────────────────────────
+do_install() {
+    choose_components
+    save_config
     [ "$SEL_RUNE"  -eq 1 ] && clone_or_update mod-rune-engraving "$SERVER/modules/mod-rune-engraving"
     [ "$SEL_WORLD" -eq 1 ] && clone_or_update mod-sod-world      "$SERVER/modules/mod-sod-world"
     [ "$SEL_MAGE"  -eq 1 ] && clone_or_update mod-sod-mage       "$SERVER/modules/mod-sod-mage"
-
     build_patches
     [ "$SEL_RUNE" -eq 1 ] && install_addon
     print_next_steps
 }
 
 do_update() {
-    load_config || warn "No saved config found — you'll be asked for paths."
-    if [ -z "$SERVER" ] || [ ! -d "$SERVER/modules" ]; then
-        resolve_path SERVER "$PRESET_SERVER" "Select your AzerothCore server root (folder that contains modules)" "modules"
-    fi
-    # discover what's installed
+    # paths + status already established by startup(); discover what's installed
     SEL_RUNE=0; SEL_WORLD=0; SEL_MAGE=0
     [ -d "$SERVER/modules/mod-rune-engraving/.git" ] && SEL_RUNE=1
     [ -d "$SERVER/modules/mod-sod-world/.git" ]      && SEL_WORLD=1
     [ -d "$SERVER/modules/mod-sod-mage/.git" ]       && SEL_MAGE=1
-    if [ $((SEL_RUNE + SEL_WORLD + SEL_MAGE)) -eq 0 ]; then
-        die "No installed modules found under $SERVER/modules — run an install first."
-    fi
-    ensure_cmd git
-    if needs_client && { [ -z "$CLIENT" ] || [ ! -d "$CLIENT/Data" ]; }; then
-        resolve_path CLIENT "$PRESET_CLIENT" "Select your WoW 3.3.5a client root (folder that contains Data and Interface)" "Data"
-    fi
+    [ $((SEL_RUNE + SEL_WORLD + SEL_MAGE)) -gt 0 ] || die "No installed modules found under $SERVER/modules — run an install first."
     save_config
-
     log "Updating installed components…"
     [ "$SEL_RUNE"  -eq 1 ] && clone_or_update mod-rune-engraving "$SERVER/modules/mod-rune-engraving"
     [ "$SEL_WORLD" -eq 1 ] && clone_or_update mod-sod-world      "$SERVER/modules/mod-sod-world"
@@ -378,8 +457,8 @@ done
 # Support `curl … | bash`: stdin is the piped script, so reconnect it to the
 # terminal (if there is one) so interactive prompts and the picker fallback work.
 [ -t 0 ] || { [ -r /dev/tty ] && exec < /dev/tty; }
-log "sod-installer — $( is_wsl && echo 'WSL' || echo 'Linux' )$( [ "$DRY_RUN" -eq 1 ] && echo ' (dry-run)' )"
 setup_pkg_mgr
+startup
 case "$ACTION" in
     install) do_install ;;
     update)  do_update ;;
