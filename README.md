@@ -56,15 +56,37 @@ shown as `Installed` (green), `Update Available` (blue), `Not Installed` (gray),
 Pulls the latest for whatever you already installed (modules + addon) and rebuilds
 the patches. Paths are remembered from your install, so there's nothing to re-pick.
 
+## Uninstalling
+
+```bash
+./install.sh --uninstall
+```
+
+Removes the cloned modules, the RuneEngraver addon, and the generated client
+patches (`patch-enus-y/z.mpq`) — and, on a full uninstall, the saved config too. It
+opens with the same status table, shows **exactly what will be deleted**, and asks
+to confirm (default No). Pick **Everything** or a subset, just like install.
+
+- **Your work is safe:** a repo with uncommitted or unpushed changes is **skipped**
+  (re-run with `--force` to remove it anyway). Only our own generated patch MPQs are
+  deleted — base client data is never touched.
+- **Your database is left alone.** The modules' custom `acore_world` rows become
+  inert once you rebuild the worldserver without the modules; drop them by hand only
+  if you want a pristine DB. (Docker users get the same opt-in rebuild offer.)
+
 ## Options
 
 ```
 --update              refresh an existing install instead of installing
+--uninstall           remove the modules, addon, and generated client patches
+--force               with --uninstall: also remove repos that have local changes
+--yes, -y             answer yes to every prompt (for non-interactive automation)
 --dry-run             print every action without changing anything (great first run)
 --all                 select everything (no menu)
 --components a,b,c     choose components non-interactively (rune,world,mage)
 --server DIR          server root (skip the picker)
 --client DIR          WoW client root (skip the picker)
+--docker | --source   set the build method (otherwise asked once, then remembered)
 -h, --help
 ```
 
@@ -81,6 +103,17 @@ A working AzerothCore source tree (you supply it and build it) and a WoW **3.3.5
 client. The MPQ patch step needs Python + `pympq` (StormLib); on WSL it uses your
 Windows Python, on Linux it pip-installs `pympq`. If `pympq` can't be installed the
 installer still clones everything and just prints the manual patch commands.
+
+## Continuous integration
+
+GitHub Actions ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs on every
+push and PR: `shellcheck`, the unit suite (`test/run_tests.sh`), and a dry-run smoke
+of install + uninstall. A separate non-blocking job exercises the **real**
+clone → install → uninstall lifecycle against the live module/addon repos. (The MPQ
+patch build isn't covered in CI — it needs the client's copyrighted DBC files — but
+the installer skips it gracefully there.)
+
+Run the unit tests locally with `bash test/run_tests.sh`.
 
 ## License
 

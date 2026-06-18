@@ -15,10 +15,13 @@
 #   Usage:
 #     ./install.sh                 interactive install
 #     ./install.sh --update        refresh an existing install (git pull + rebuild patches)
+#     ./install.sh --uninstall     remove modules/addon/patches (DB is left untouched)
 #     ./install.sh --dry-run       print every action without doing anything
 #     ./install.sh --all --server DIR --client DIR    non-interactive (CI)
 #     ./install.sh --components rune,world,mage        choose components non-interactively
 #     ./install.sh --docker | --source                set build method (else asked once)
+#     ./install.sh --uninstall --force                also remove repos with local changes
+#     ./install.sh --yes                              answer yes to all prompts (automation)
 #
 # Non-destructive: only ever `git clone` (missing) or `git pull --ff-only`
 # (existing); never reset/clean/force/delete.
@@ -34,6 +37,8 @@ CONFIG_FILE="$CONFIG_DIR/config"
 
 # ── globals ──────────────────────────────────────────────────────────────────
 DRY_RUN=0
+FORCE=0                  # uninstall: delete repos even if they have local changes
+ASSUME_YES=0            # answer "yes" to every confirm (non-interactive automation)
 ACTION="install"
 SERVER=""; CLIENT=""
 BUILD_METHOD=""          # "source" (cmake) or "docker"; remembered in config
@@ -89,6 +94,7 @@ ensure_cmd() {
 # ── interactive helpers ──────────────────────────────────────────────────────
 ask_yn() { # ask_yn "question" [Y|N default]
     local q="$1" def="${2:-Y}" ans
+    [ "$ASSUME_YES" -eq 1 ] && return 0          # --yes: auto-accept every prompt
     if [ "$def" = "Y" ]; then read -r -p "$q [Y/n] " ans || true; ans="${ans:-y}"
     else read -r -p "$q [y/N] " ans || true; ans="${ans:-n}"; fi
     case "$ans" in [Yy]*) return 0 ;; *) return 1 ;; esac
@@ -261,6 +267,17 @@ install_addon() {
     clone_or_update "$ADDON_REPO" "$ad/RuneEngraver"
 }
 
+# enus_dir → the client locale dir where the build scripts write the patch MPQs
+# (build_sod_*_patch.py use <client>/data/enus). Probe case variants, then fall
+# back to the lowercase path the builders use.
+enus_dir() {
+    local d
+    for d in "data/enus" "Data/enus" "Data/Enus" "data/Enus"; do
+        [ -d "$CLIENT/$d" ] && { printf '%s' "$CLIENT/$d"; return 0; }
+    done
+    printf '%s' "$CLIENT/data/enus"
+}
+
 # ── config persistence ───────────────────────────────────────────────────────
 save_config() {
     run mkdir -p "$CONFIG_DIR"
@@ -323,29 +340,17 @@ detect_compose() {
 # and docker-compose.override.yml are both picked up), honoring --dry-run.
 dc() { run sh -c "cd \"$SERVER\" && $DOCKER_COMPOSE $*"; }
 
-# offer_docker_build: opt-in rebuild + restart of the worldserver. Stops the
-# running stack, recompiles the image with the freshly-cloned modules, brings it
-# back up, then follows the worldserver log so the user can watch it come online.
-# No-op unless the build method is Docker and we have an interactive terminal.
-offer_docker_build() {
-    [ "$BUILD_METHOD" = "docker" ] || return 0
-    [ -t 0 ] || return 0
-    if ! detect_compose; then
-        warn "Docker / compose not found — skipping the auto-rebuild offer."
-        return 0
-    fi
-    echo
-    warn "This restarts your server: the running containers are stopped, the"
-    warn "worldserver is recompiled with the new modules, then brought back up."
-    ask_yn "Rebuild and restart the worldserver in Docker now?" N || return 0
-
+# docker_rebuild: the actual work — stop the stack, recompile the worldserver
+# image, bring it back up, then follow the worldserver log. Assumes DOCKER_COMPOSE
+# is set. Sets DID_BUILD on success. Honors --dry-run. (Split from the interactive
+# wrapper so it can be unit-tested without a TTY.)
+docker_rebuild() {
     if [ "$DRY_RUN" -ne 1 ] && ! docker info >/dev/null 2>&1; then
         warn "Can't reach the Docker daemon (is it running? are you in the 'docker' group?)."
         warn "Skipping the auto-rebuild — run it yourself when ready:"
         print_rebuild_cmd
         return 0
     fi
-
     log "Stopping containers ($DOCKER_COMPOSE down)…"
     dc down
     log "Recompiling the worldserver image ($DOCKER_COMPOSE build) — output streams below…"
@@ -364,6 +369,22 @@ offer_docker_build() {
         return 0
     fi
     sh -c "cd \"$SERVER\" && $DOCKER_COMPOSE logs -f ac-worldserver" || true
+}
+
+# offer_docker_build: opt-in wrapper around docker_rebuild. No-op unless the build
+# method is Docker and we have an interactive terminal; prompts before doing work.
+offer_docker_build() {
+    [ "$BUILD_METHOD" = "docker" ] || return 0
+    [ -t 0 ] || return 0
+    if ! detect_compose; then
+        warn "Docker / compose not found — skipping the auto-rebuild offer."
+        return 0
+    fi
+    echo
+    warn "This restarts your server: the running containers are stopped, the"
+    warn "worldserver is recompiled with the new modules, then brought back up."
+    ask_yn "Rebuild and restart the worldserver in Docker now?" N || return 0
+    docker_rebuild
 }
 
 # ── next steps ───────────────────────────────────────────────────────────────
@@ -545,41 +566,201 @@ do_update() {
     fi
 }
 
+# ── uninstall ────────────────────────────────────────────────────────────────
+# remove_repo <name> <dir>: safety-gated delete of a cloned checkout. Skips a
+# non-checkout, and (unless --force) skips a repo with local changes / unpushed
+# commits — repo_status returns "local" for those, the same signal the status
+# table shows. Honors --dry-run via run.
+remove_repo() {
+    local name="$1" dir="$2" st
+    [ -e "$dir" ] || { warn "$name: not present — nothing to remove."; return 0; }
+    if [ ! -d "$dir/.git" ]; then
+        warn "$name: '$dir' is not a git checkout — leaving it alone."
+        return 0
+    fi
+    st="$(repo_status "$dir")"
+    if [ "$st" = "local" ] && [ "$FORCE" -ne 1 ]; then
+        warn "$name: has local changes or unpushed commits — skipping (use --force to remove)."
+        return 0
+    fi
+    log "Removing $name → $dir"
+    run rm -rf "$dir"
+}
+
+remove_addon() {
+    remove_repo "$ADDON_REPO addon" "$(addons_dir)/RuneEngraver"
+}
+
+# remove_patches: delete only our own generated MPQ letters; base client data is
+# never touched. World owns patch-enus-y (items), Mage owns patch-enus-z (spells).
+remove_patches() {
+    local ed; ed="$(enus_dir)"
+    if [ "$SEL_WORLD" -eq 1 ] && [ -f "$ed/patch-enus-y.mpq" ]; then
+        log "Removing item patch → $ed/patch-enus-y.mpq"; run rm -f "$ed/patch-enus-y.mpq"
+    fi
+    if [ "$SEL_MAGE" -eq 1 ] && [ -f "$ed/patch-enus-z.mpq" ]; then
+        log "Removing spell patch → $ed/patch-enus-z.mpq"; run rm -f "$ed/patch-enus-z.mpq"
+    fi
+}
+
+# choose what to remove: option 1 = everything installed (default), option 2 =
+# custom. Honors --all / --components. Defaults each component to "installed".
+choose_uninstall_components() {
+    SEL_RUNE=0; SEL_WORLD=0; SEL_MAGE=0
+    local have_rune=0 have_world=0 have_mage=0
+    [ -d "$SERVER/modules/mod-rune-engraving/.git" ] && have_rune=1
+    [ -d "$SERVER/modules/mod-sod-world/.git" ]      && have_world=1
+    [ -d "$SERVER/modules/mod-sod-mage/.git" ]       && have_mage=1
+
+    if [ -n "$PRESET_COMPONENTS" ]; then
+        case ",$PRESET_COMPONENTS," in *,all,*) SEL_RUNE=1; SEL_WORLD=1; SEL_MAGE=1 ;; esac
+        case ",$PRESET_COMPONENTS," in *,rune,*)  SEL_RUNE=1  ;; esac
+        case ",$PRESET_COMPONENTS," in *,world,*) SEL_WORLD=1 ;; esac
+        case ",$PRESET_COMPONENTS," in *,mage,*)  SEL_MAGE=1  ;; esac
+    elif [ ! -t 0 ]; then
+        SEL_RUNE=$have_rune; SEL_WORLD=$have_world; SEL_MAGE=$have_mage
+    else
+        echo
+        echo "What would you like to remove?"
+        echo "  1) Everything installed   [default]"
+        echo "  2) Custom                 (choose components)"
+        local choice; read -r -p "Choice [1]: " choice || true; choice="${choice:-1}"
+        if [ "$choice" = "1" ]; then
+            SEL_RUNE=$have_rune; SEL_WORLD=$have_world; SEL_MAGE=$have_mage
+        else
+            [ "$have_rune" -eq 1 ]  && { ask_yn "Remove Rune Engraving (engine + addon)?" Y && SEL_RUNE=1; }
+            [ "$have_world" -eq 1 ] && { ask_yn "Remove SoD World?"                        Y && SEL_WORLD=1; }
+            [ "$have_mage" -eq 1 ]  && { ask_yn "Remove SoD Mage?"                         Y && SEL_MAGE=1; }
+        fi
+    fi
+    [ $((SEL_RUNE + SEL_WORLD + SEL_MAGE)) -gt 0 ] || die "Nothing selected to remove."
+    resolve_remove_deps
+}
+
+# warnings only (reverse of resolve_deps): point out when a partial removal leaves
+# SoD Mage depending on a piece that's going away. Never changes the selection.
+resolve_remove_deps() {
+    local mage_stays=0
+    [ "$SEL_MAGE" -eq 0 ] && [ -d "$SERVER/modules/mod-sod-mage/.git" ] && mage_stays=1
+    if [ "$mage_stays" -eq 1 ] && [ "$SEL_WORLD" -eq 1 ]; then
+        warn "Removing SoD World while SoD Mage stays: mage item icons lose their"
+        warn "patch (patch-enus-y.mpq) and the Mass Regeneration Lich drop is gone."
+    fi
+    if [ "$mage_stays" -eq 1 ] && [ "$SEL_RUNE" -eq 1 ]; then
+        warn "Removing Rune Engraving while SoD Mage stays: the spells still work via"
+        warn "GM '.learn', but they can no longer be engraved as runes."
+    fi
+}
+
+do_uninstall() {
+    choose_uninstall_components
+
+    # Full uninstall = removing every SoD piece currently installed → also drop
+    # the saved config so a future install starts clean.
+    local remove_config=0
+    if [ ! -d "$SERVER/modules/mod-rune-engraving/.git" -o "$SEL_RUNE" -eq 1 ] \
+    && [ ! -d "$SERVER/modules/mod-sod-world/.git" -o "$SEL_WORLD" -eq 1 ] \
+    && [ ! -d "$SERVER/modules/mod-sod-mage/.git" -o "$SEL_MAGE" -eq 1 ]; then
+        remove_config=1
+    fi
+
+    local ad ed; ad="$(addons_dir)"; ed="$(enus_dir)"
+    echo
+    echo "The following will be removed:"
+    [ "$SEL_RUNE"  -eq 1 ] && echo "  - $SERVER/modules/mod-rune-engraving"
+    [ "$SEL_RUNE"  -eq 1 ] && echo "  - $ad/RuneEngraver"
+    [ "$SEL_WORLD" -eq 1 ] && echo "  - $SERVER/modules/mod-sod-world"
+    [ "$SEL_WORLD" -eq 1 ] && [ -f "$ed/patch-enus-y.mpq" ] && echo "  - $ed/patch-enus-y.mpq"
+    [ "$SEL_MAGE"  -eq 1 ] && echo "  - $SERVER/modules/mod-sod-mage"
+    [ "$SEL_MAGE"  -eq 1 ] && [ -f "$ed/patch-enus-z.mpq" ] && echo "  - $ed/patch-enus-z.mpq"
+    [ "$remove_config" -eq 1 ] && [ -f "$CONFIG_FILE" ] && echo "  - $CONFIG_FILE  (saved installer config)"
+    echo
+    echo "Your database is NOT touched (see the note below). Repos with local changes"
+    echo "are skipped unless --force."
+    echo
+
+    if [ "$DRY_RUN" -ne 1 ]; then
+        ask_yn "Delete these now? This cannot be undone." N || { warn "Aborted — nothing removed."; return 0; }
+    fi
+
+    [ "$SEL_RUNE"  -eq 1 ] && { remove_repo "mod-rune-engraving" "$SERVER/modules/mod-rune-engraving"; remove_addon; }
+    [ "$SEL_WORLD" -eq 1 ] && remove_repo "mod-sod-world" "$SERVER/modules/mod-sod-world"
+    [ "$SEL_MAGE"  -eq 1 ] && remove_repo "mod-sod-mage"  "$SERVER/modules/mod-sod-mage"
+    remove_patches
+
+    if [ "$remove_config" -eq 1 ] && [ -f "$CONFIG_FILE" ]; then
+        log "Removing saved config → $CONFIG_FILE"; run rm -f "$CONFIG_FILE"
+    fi
+
+    # Rebuild the worldserver WITHOUT the removed modules so the removal takes
+    # effect (docker: offer it; source: print the note via the fall-through).
+    offer_docker_build
+
+    echo
+    ok "Uninstall complete."
+    echo
+    echo "Database note: the modules' custom rows in acore_world (spell_dbc, items,"
+    echo "the Awakened Lich, rune catalog entries) are left in place. They become"
+    echo "inert once the worldserver is rebuilt without the modules' scripts. Drop"
+    echo "them manually only if you want a pristine DB."
+    if [ "$DID_BUILD" -ne 1 ]; then
+        echo
+        echo "Rebuild your worldserver (without the modules) to finish:"
+        print_rebuild_cmd
+    fi
+}
+
 usage() {
     # print the header comment block (lines after the shebang, up to the first
-    # non-comment line) with the leading "# " stripped
-    awk 'NR>1 { if ($0 ~ /^#/) { sub(/^# ?/, ""); print } else exit }' "$0"
+    # non-comment line) with the leading "# " stripped. BASH_SOURCE (not $0) so it
+    # works whether the script is executed or sourced (e.g. by the test suite).
+    awk 'NR>1 { if ($0 ~ /^#/) { sub(/^# ?/, ""); print } else exit }' "${BASH_SOURCE[0]}"
     exit 0
 }
 
 # ── argument parsing ─────────────────────────────────────────────────────────
-while [ $# -gt 0 ]; do
-    case "$1" in
-        --dry-run)    DRY_RUN=1 ;;
-        --install)    ACTION="install" ;;
-        --update)     ACTION="update" ;;
-        --all)        PRESET_COMPONENTS="all" ;;
-        --docker)     PRESET_BUILD="docker" ;;
-        --source|--cmake) PRESET_BUILD="source" ;;
-        --components) PRESET_COMPONENTS="${2:-}"; shift ;;
-        --components=*) PRESET_COMPONENTS="${1#*=}" ;;
-        --server)     PRESET_SERVER="${2:-}"; shift ;;
-        --server=*)   PRESET_SERVER="${1#*=}" ;;
-        --client)     PRESET_CLIENT="${2:-}"; shift ;;
-        --client=*)   PRESET_CLIENT="${1#*=}" ;;
-        -h|--help)    usage ;;
-        *) die "Unknown argument: $1 (try --help)" ;;
-    esac
-    shift
-done
+parse_args() {
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --dry-run)    DRY_RUN=1 ;;
+            --install)    ACTION="install" ;;
+            --update)     ACTION="update" ;;
+            --uninstall)  ACTION="uninstall" ;;
+            --force)      FORCE=1 ;;
+            --yes|-y)     ASSUME_YES=1 ;;
+            --all)        PRESET_COMPONENTS="all" ;;
+            --docker)     PRESET_BUILD="docker" ;;
+            --source|--cmake) PRESET_BUILD="source" ;;
+            --components) PRESET_COMPONENTS="${2:-}"; shift ;;
+            --components=*) PRESET_COMPONENTS="${1#*=}" ;;
+            --server)     PRESET_SERVER="${2:-}"; shift ;;
+            --server=*)   PRESET_SERVER="${1#*=}" ;;
+            --client)     PRESET_CLIENT="${2:-}"; shift ;;
+            --client=*)   PRESET_CLIENT="${1#*=}" ;;
+            -h|--help)    usage ;;
+            *) die "Unknown argument: $1 (try --help)" ;;
+        esac
+        shift
+    done
+}
 
 # ── main ─────────────────────────────────────────────────────────────────────
-# Support `curl … | bash`: stdin is the piped script, so reconnect it to the
-# terminal (if there is one) so interactive prompts and the picker fallback work.
-[ -t 0 ] || { [ -r /dev/tty ] && exec < /dev/tty; }
-setup_pkg_mgr
-startup
-case "$ACTION" in
-    install) do_install ;;
-    update)  do_update ;;
-esac
+main() {
+    parse_args "$@"
+    # Support `curl … | bash`: stdin is the piped script, so reconnect it to the
+    # terminal (if there is one) so interactive prompts and the picker work.
+    [ -t 0 ] || { [ -r /dev/tty ] && exec < /dev/tty; }
+    setup_pkg_mgr
+    startup
+    case "$ACTION" in
+        install)   do_install ;;
+        update)    do_update ;;
+        uninstall) do_uninstall ;;
+    esac
+}
+
+# Run main only when executed directly; when sourced (e.g. by the test suite),
+# expose the functions without running anything.
+if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
+    main "$@"
+fi

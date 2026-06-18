@@ -1,0 +1,85 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  lint:
+    name: shellcheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: shellcheck
+        run: shellcheck install.sh test/run_tests.sh
+
+  test:
+    name: unit + dry-run smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Unit tests
+        run: bash test/run_tests.sh
+
+      - name: Dry-run smoke (install + uninstall against fake dirs)
+        run: |
+          set -euo pipefail
+          S="$RUNNER_TEMP/server"
+          C="$RUNNER_TEMP/client"
+          mkdir -p "$S/modules" "$C/Data" "$C/Interface/AddOns" "$C/data/enus"
+
+          echo "::group::install --dry-run"
+          out="$(./install.sh --dry-run --all --source --server "$S" --client "$C")"
+          echo "$out"
+          echo "::endgroup::"
+          grep -q "Next steps" <<<"$out"
+
+          echo "::group::uninstall --dry-run"
+          out="$(./install.sh --dry-run --uninstall --all --source --server "$S" --client "$C")"
+          echo "$out"
+          echo "::endgroup::"
+          grep -q "following will be removed" <<<"$out"
+          grep -q "Database note" <<<"$out"
+
+  live:
+    name: live clone install/uninstall (real repos)
+    runs-on: ubuntu-latest
+    continue-on-error: true   # a sibling-repo outage shouldn't fail the pipeline
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Real install (clones the public repos)
+        run: |
+          set -euo pipefail
+          S="$RUNNER_TEMP/server"
+          C="$RUNNER_TEMP/client"
+          mkdir -p "$S/modules" "$C/Data" "$C/Interface/AddOns" "$C/data/enus"
+
+          # Real run: clones the four repos. The MPQ patch step has no client DBCs
+          # and no pympq, so it skips/fails gracefully — we only assert the clones.
+          ./install.sh --all --source --server "$S" --client "$C"
+
+          for d in mod-rune-engraving mod-sod-world mod-sod-mage; do
+            test -d "$S/modules/$d/.git" || { echo "missing clone: $d" >&2; exit 1; }
+          done
+          test -d "$C/Interface/AddOns/RuneEngraver/.git" \
+            || { echo "missing addon clone" >&2; exit 1; }
+          echo "All four repos cloned."
+
+      - name: Real uninstall (removes them again)
+        run: |
+          set -euo pipefail
+          S="$RUNNER_TEMP/server"
+          C="$RUNNER_TEMP/client"
+
+          ./install.sh --uninstall --all --yes --source --server "$S" --client "$C"
+
+          for d in mod-rune-engraving mod-sod-world mod-sod-mage; do
+            test ! -e "$S/modules/$d" || { echo "still present: $d" >&2; exit 1; }
+          done
+          test ! -e "$C/Interface/AddOns/RuneEngraver" \
+            || { echo "addon still present" >&2; exit 1; }
+          echo "All four repos removed."
