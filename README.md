@@ -18,9 +18,10 @@ cd sod-installer && bash install.sh        # (or ./install.sh if it's executable
 curl -sSL https://raw.githubusercontent.com/bennybroseph/sod-installer/main/install.sh | bash
 ```
 
-You'll pick what to install and point it at two folders (your AzerothCore **server
-root** that contains `modules/`, and your **WoW 3.3.5a client root**) using a native
-folder picker.
+Running it with no flags opens a menu to choose **Install**, **Update**, or
+**Uninstall**. You then point it at two folders (your AzerothCore **server root**
+that contains `modules/`, and your **WoW 3.3.5a client root**) using a native
+folder picker. (The `--install` / `--update` / `--uninstall` flags skip the menu.)
 
 ## What you can install
 
@@ -41,8 +42,9 @@ shown as `Installed` (green), `Update Available` (blue), `Not Installed` (gray),
 1. Auto-installs missing prerequisites (`git`, and `python3` + `pympq` if a patch
    needs building; `zenity` for the picker on Linux).
 2. Clones the selected modules into `<server>/modules/`.
-3. Builds the needed client patches (`patch-enus-y.mpq` items, `patch-enus-z.mpq`
-   spells) into `<client>/Data/enus/`. **Close WoW first** — it locks those files.
+3. Builds the needed client patches — item patches (letter `y`) and spell patches
+   (letter `z`) — written to both `<client>/Data/<locale>/` (e.g. `patch-enus-y.mpq`)
+   and `<client>/Data/` (e.g. `patch-y.mpq`). **Close WoW first** — it locks those files.
 4. Clones the RuneEngraver addon into `<client>/Interface/AddOns/`.
 5. Prints your next steps. **You build the worldserver** (`-DMODULES=static`).
 
@@ -65,7 +67,8 @@ the patches. Paths are remembered from your install, so there's nothing to re-pi
 ```
 
 Removes the cloned modules, the RuneEngraver addon, and the generated client
-patches (`patch-enus-y/z.mpq`) — and, on a full uninstall, the saved config too. It
+patches (the `y`/`z` letters in both `Data/<locale>/` and `Data/`) — and, on a full
+uninstall, the saved config too. It
 opens with the same status table, shows **exactly what will be deleted**, and asks
 to confirm (default No). Pick **Everything** or a subset, just like install.
 

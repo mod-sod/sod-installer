@@ -13,7 +13,7 @@
 #   the worldserver yourself. Works on native Linux and WSL.
 #
 #   Usage:
-#     ./install.sh                 interactive install
+#     ./install.sh                 interactive menu (choose install / update / uninstall)
 #     ./install.sh --update        refresh an existing install (git pull + rebuild patches)
 #     ./install.sh --uninstall     remove modules/addon/patches (DB is left untouched)
 #     ./install.sh --dry-run       print every action without doing anything
@@ -40,6 +40,7 @@ DRY_RUN=0
 FORCE=0                  # uninstall: delete repos even if they have local changes
 ASSUME_YES=0            # answer "yes" to every confirm (non-interactive automation)
 ACTION="install"
+ACTION_SET=0             # 1 once an explicit --install/--update/--uninstall is given
 SERVER=""; CLIENT=""
 BUILD_METHOD=""          # "source" (cmake) or "docker"; remembered in config
 PRESET_SERVER=""; PRESET_CLIENT=""; PRESET_COMPONENTS=""; PRESET_BUILD=""
@@ -271,15 +272,35 @@ install_addon() {
     clone_or_update "$ADDON_REPO" "$ad/RuneEngraver"
 }
 
-# enus_dir → the client locale dir where the build scripts write the patch MPQs
-# (build_sod_*_patch.py use <client>/data/enus). Probe case variants, then fall
-# back to the lowercase path the builders use.
-enus_dir() {
+# data_dir → the client base data dir where the build scripts write the base-chain
+# patch MPQs (build_sod_*_patch.py write <client>/data/patch-<letter>.mpq). Probe
+# case variants, then fall back to lowercase.
+data_dir() {
     local d
-    for d in "data/enus" "Data/enus" "Data/Enus" "data/Enus"; do
+    for d in "data" "Data"; do
         [ -d "$CLIENT/$d" ] && { printf '%s' "$CLIENT/$d"; return 0; }
     done
-    printf '%s' "$CLIENT/data/enus"
+    printf '%s' "$CLIENT/data"
+}
+
+# client_locale → the client's locale folder token (the dir under data/ holding the
+# locale-*.mpq archives), e.g. 'enus' or 'deDE'. Matches what build_sod_*_patch.py
+# detect and embed in the locale patch name. Defaults to 'enus' if none is found.
+client_locale() {
+    local dd d; dd="$(data_dir)"
+    for d in "$dd"/*/; do
+        [ -d "$d" ] || continue
+        if ls "$d"locale-*.mpq >/dev/null 2>&1; then
+            basename "$d"; return 0
+        fi
+    done
+    printf 'enus'
+}
+
+# enus_dir → the client locale dir where the build scripts write the locale-chain
+# patch MPQ (<client>/data/<locale>/). Locale-aware via client_locale.
+enus_dir() {
+    printf '%s/%s' "$(data_dir)" "$(client_locale)"
 }
 
 # ── config persistence ───────────────────────────────────────────────────────
@@ -599,15 +620,19 @@ remove_addon() {
     remove_repo "$ADDON_REPO addon" "$(addons_dir)/RuneEngraver"
 }
 
-# remove_patches: delete only our own generated MPQ letters; base client data is
-# never touched. World owns patch-enus-y (items), Mage owns patch-enus-z (spells).
+# remove_patches: delete only our own generated MPQ letters; stock client data is
+# never touched. World owns letter 'y' (items), Mage owns letter 'z' (spells). The
+# build scripts write each to BOTH the locale chain (data/enus/patch-enus-<letter>)
+# and the base chain (data/patch-<letter>), so remove both.
 remove_patches() {
-    local ed; ed="$(enus_dir)"
-    if [ "$SEL_WORLD" -eq 1 ] && [ -f "$ed/patch-enus-y.mpq" ]; then
-        log "Removing item patch → $ed/patch-enus-y.mpq"; run rm -f "$ed/patch-enus-y.mpq"
+    local ed dd loc; ed="$(enus_dir)"; dd="$(data_dir)"; loc="$(client_locale)"
+    if [ "$SEL_WORLD" -eq 1 ]; then
+        [ -f "$ed/patch-$loc-y.mpq" ] && { log "Removing item patch → $ed/patch-$loc-y.mpq"; run rm -f "$ed/patch-$loc-y.mpq"; }
+        [ -f "$dd/patch-y.mpq" ]      && { log "Removing item patch → $dd/patch-y.mpq";       run rm -f "$dd/patch-y.mpq"; }
     fi
-    if [ "$SEL_MAGE" -eq 1 ] && [ -f "$ed/patch-enus-z.mpq" ]; then
-        log "Removing spell patch → $ed/patch-enus-z.mpq"; run rm -f "$ed/patch-enus-z.mpq"
+    if [ "$SEL_MAGE" -eq 1 ]; then
+        [ -f "$ed/patch-$loc-z.mpq" ] && { log "Removing spell patch → $ed/patch-$loc-z.mpq"; run rm -f "$ed/patch-$loc-z.mpq"; }
+        [ -f "$dd/patch-z.mpq" ]      && { log "Removing spell patch → $dd/patch-z.mpq";       run rm -f "$dd/patch-z.mpq"; }
     fi
 }
 
@@ -652,7 +677,7 @@ resolve_remove_deps() {
     [ "$SEL_MAGE" -eq 0 ] && [ -d "$SERVER/modules/mod-sod-mage/.git" ] && mage_stays=1
     if [ "$mage_stays" -eq 1 ] && [ "$SEL_WORLD" -eq 1 ]; then
         warn "Removing SoD World while SoD Mage stays: mage item icons lose their"
-        warn "patch (patch-enus-y.mpq) and the Mass Regeneration Lich drop is gone."
+        warn "item patch (letter 'y') and the Mass Regeneration Lich drop is gone."
     fi
     if [ "$mage_stays" -eq 1 ] && [ "$SEL_RUNE" -eq 1 ]; then
         warn "Removing Rune Engraving while SoD Mage stays: the spells still work via"
@@ -672,15 +697,17 @@ do_uninstall() {
         remove_config=1
     fi
 
-    local ad ed; ad="$(addons_dir)"; ed="$(enus_dir)"
+    local ad ed dd loc; ad="$(addons_dir)"; ed="$(enus_dir)"; dd="$(data_dir)"; loc="$(client_locale)"
     echo
     echo "The following will be removed:"
     [ "$SEL_RUNE"  -eq 1 ] && echo "  - $SERVER/modules/mod-rune-engraving"
     [ "$SEL_RUNE"  -eq 1 ] && echo "  - $ad/RuneEngraver"
     [ "$SEL_WORLD" -eq 1 ] && echo "  - $SERVER/modules/mod-sod-world"
-    [ "$SEL_WORLD" -eq 1 ] && [ -f "$ed/patch-enus-y.mpq" ] && echo "  - $ed/patch-enus-y.mpq"
+    [ "$SEL_WORLD" -eq 1 ] && [ -f "$ed/patch-$loc-y.mpq" ] && echo "  - $ed/patch-$loc-y.mpq"
+    [ "$SEL_WORLD" -eq 1 ] && [ -f "$dd/patch-y.mpq" ]      && echo "  - $dd/patch-y.mpq"
     [ "$SEL_MAGE"  -eq 1 ] && echo "  - $SERVER/modules/mod-sod-mage"
-    [ "$SEL_MAGE"  -eq 1 ] && [ -f "$ed/patch-enus-z.mpq" ] && echo "  - $ed/patch-enus-z.mpq"
+    [ "$SEL_MAGE"  -eq 1 ] && [ -f "$ed/patch-$loc-z.mpq" ] && echo "  - $ed/patch-$loc-z.mpq"
+    [ "$SEL_MAGE"  -eq 1 ] && [ -f "$dd/patch-z.mpq" ]      && echo "  - $dd/patch-z.mpq"
     [ "$remove_config" -eq 1 ] && [ -f "$CONFIG_FILE" ] && echo "  - $CONFIG_FILE  (saved installer config)"
     echo
     echo "Your database is NOT touched (see the note below). Repos with local changes"
@@ -731,9 +758,9 @@ parse_args() {
     while [ $# -gt 0 ]; do
         case "$1" in
             --dry-run)    DRY_RUN=1 ;;
-            --install)    ACTION="install" ;;
-            --update)     ACTION="update" ;;
-            --uninstall)  ACTION="uninstall" ;;
+            --install)    ACTION="install";   ACTION_SET=1 ;;
+            --update)     ACTION="update";    ACTION_SET=1 ;;
+            --uninstall)  ACTION="uninstall"; ACTION_SET=1 ;;
             --force)      FORCE=1 ;;
             --yes|-y)     ASSUME_YES=1 ;;
             --all)        PRESET_COMPONENTS="all" ;;
@@ -753,6 +780,25 @@ parse_args() {
 }
 
 # ── main ─────────────────────────────────────────────────────────────────────
+# choose_action → top-level menu (install / update / uninstall) shown when run
+# interactively without an explicit --install/--update/--uninstall flag. The
+# status table from startup() is already on screen to inform the choice.
+choose_action() {
+    [ "$ACTION_SET" -eq 1 ] && return 0     # an explicit flag wins
+    [ -t 0 ] || return 0                    # non-interactive: keep default (install)
+    echo
+    echo "What would you like to do?"
+    echo "  1) Install      (add components & build client patches)   [default]"
+    echo "  2) Update       (pull latest for installed components, rebuild patches)"
+    echo "  3) Uninstall    (remove modules, addon, and client patches)"
+    local c; read -r -p "Choice [1]: " c || true; c="${c:-1}"
+    case "$c" in
+        2) ACTION="update" ;;
+        3) ACTION="uninstall" ;;
+        *) ACTION="install" ;;
+    esac
+}
+
 main() {
     parse_args "$@"
     # Support `curl … | bash`: stdin is the piped script, so reconnect it to the
@@ -762,6 +808,7 @@ main() {
     if [ ! -t 0 ] && { : < /dev/tty; } 2>/dev/null; then exec < /dev/tty; fi
     setup_pkg_mgr
     startup
+    choose_action
     case "$ACTION" in
         install)   do_install ;;
         update)    do_update ;;

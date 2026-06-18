@@ -144,11 +144,44 @@ t_remove_patches() {
     reset_state; local d out; d="$(mktemp -d)"
     CLIENT="$d"; mkdir -p "$d/data/enus"
     : > "$d/data/enus/patch-enus-y.mpq"; : > "$d/data/enus/patch-enus-z.mpq"
+    : > "$d/data/patch-y.mpq";           : > "$d/data/patch-z.mpq"
     SEL_WORLD=1; SEL_MAGE=0
     out="$(remove_patches 2>&1)"
-    assert_contains     "$out" "patch-enus-y" "remove_patches: world patch targeted"
-    assert_not_contains "$out" "patch-enus-z" "remove_patches: mage patch untouched"
+    assert_contains     "$out" "patch-enus-y"      "remove_patches: world locale patch targeted"
+    assert_contains     "$out" "$d/data/patch-y"   "remove_patches: world base patch targeted"
+    assert_not_contains "$out" "patch-enus-z"      "remove_patches: mage locale patch untouched"
+    assert_not_contains "$out" "$d/data/patch-z"   "remove_patches: mage base patch untouched"
     rm -rf "$d"
+}
+
+t_data_dir() {
+    reset_state; local d; d="$(mktemp -d)"
+    CLIENT="$d"; mkdir -p "$d/data"
+    assert_eq "$d/data" "$(data_dir)" "data_dir: lowercase data"
+    rm -rf "$d/data"; mkdir -p "$d/Data"
+    assert_eq "$d/Data" "$(data_dir)" "data_dir: Data variant"
+    CLIENT="/no/such"; assert_eq "/no/such/data" "$(data_dir)" "data_dir: fallback"
+    rm -rf "$d"
+}
+
+t_client_locale() {
+    reset_state; local d; d="$(mktemp -d)"
+    CLIENT="$d"
+    mkdir -p "$d/data/dede"; : > "$d/data/dede/locale-dede.mpq"
+    assert_eq "dede" "$(client_locale)" "client_locale: detects locale folder"
+    rm -rf "$d/data"; mkdir -p "$d/data/enus"   # dir with no locale-*.mpq inside
+    assert_eq "enus" "$(client_locale)" "client_locale: defaults to enus"
+    rm -rf "$d"
+}
+
+t_choose_action() {
+    reset_state
+    ACTION="install"; ACTION_SET=1
+    choose_action </dev/null
+    assert_eq "install" "$ACTION" "choose_action: explicit flag is not overridden"
+    ACTION="install"; ACTION_SET=0
+    choose_action </dev/null   # non-tty stdin → keep default, no prompt
+    assert_eq "install" "$ACTION" "choose_action: non-interactive keeps default"
 }
 
 t_rebuild_cmd() {
@@ -195,6 +228,7 @@ t_do_uninstall_real() {
     mkrepo "$srv/modules/mod-sod-mage"
     mkrepo "$cli/Interface/AddOns/RuneEngraver"
     : > "$cli/data/enus/patch-enus-y.mpq"; : > "$cli/data/enus/patch-enus-z.mpq"
+    : > "$cli/data/patch-y.mpq";           : > "$cli/data/patch-z.mpq"
     printf 'server=%s\nclient=%s\nbuild=source\n' "$srv" "$cli" > "$CONFIG_FILE"
 
     DRY_RUN=0; SERVER="$srv"; CLIENT="$cli"; BUILD_METHOD="source"; PRESET_COMPONENTS="all"
@@ -206,8 +240,10 @@ t_do_uninstall_real() {
     assert_absent "$srv/modules/mod-sod-world"             "do_uninstall: world repo removed"
     assert_absent "$srv/modules/mod-sod-mage"              "do_uninstall: mage repo removed"
     assert_absent "$cli/Interface/AddOns/RuneEngraver"     "do_uninstall: addon removed"
-    assert_absent "$cli/data/enus/patch-enus-y.mpq"        "do_uninstall: world patch removed"
-    assert_absent "$cli/data/enus/patch-enus-z.mpq"        "do_uninstall: mage patch removed"
+    assert_absent "$cli/data/enus/patch-enus-y.mpq"        "do_uninstall: world locale patch removed"
+    assert_absent "$cli/data/enus/patch-enus-z.mpq"        "do_uninstall: mage locale patch removed"
+    assert_absent "$cli/data/patch-y.mpq"                  "do_uninstall: world base patch removed"
+    assert_absent "$cli/data/patch-z.mpq"                  "do_uninstall: mage base patch removed"
     assert_absent "$CONFIG_FILE"                           "do_uninstall: config removed (full clean)"
     rm -rf "$srv" "$cli"
 }
@@ -225,7 +261,8 @@ t_blackbox_unknown_arg() {
 # ── run ──────────────────────────────────────────────────────────────────────
 for t in \
     t_parse_args t_parse_yes t_ask_yn_assume_yes \
-    t_repo_status t_enus_dir t_addons_dir t_choose_components_dep \
+    t_repo_status t_enus_dir t_data_dir t_client_locale t_choose_action \
+    t_addons_dir t_choose_components_dep \
     t_resolve_remove_deps t_remove_repo_guard t_remove_repo_real t_remove_patches \
     t_rebuild_cmd t_next_steps_docker_built t_docker_rebuild t_usage \
     t_resolve_path_valid_preset t_do_uninstall_real t_blackbox_help t_blackbox_unknown_arg
