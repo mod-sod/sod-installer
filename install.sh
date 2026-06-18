@@ -77,7 +77,10 @@ setup_pkg_mgr() {
     else PKG_INSTALL=""; fi
 }
 
-# ensure_cmd <command> [package]: install <package> only if <command> is missing
+# ensure_cmd <command> [package]: install <package> only if <command> is missing.
+# $SUDO and $PKG_REFRESH/$PKG_INSTALL are deliberately left unquoted so they word-
+# split into separate argv entries (e.g. "apt-get install -y"); SC2086 is expected.
+# shellcheck disable=SC2086
 ensure_cmd() {
     local cmd="$1" pkg="${2:-$1}"
     command -v "$cmd" >/dev/null 2>&1 && return 0
@@ -190,7 +193,8 @@ clone_or_update() {
         warn "$repo: '$dest' exists but is not a git checkout — skipping."
     else
         log "Cloning $repo → $dest"
-        run git clone --quiet --branch "$BRANCH" "$url" "$dest" && ok "$repo cloned." || warn "$repo: clone failed."
+        if run git clone --quiet --branch "$BRANCH" "$url" "$dest"; then ok "$repo cloned."
+        else warn "$repo: clone failed."; fi
     fi
 }
 
@@ -658,9 +662,9 @@ do_uninstall() {
     # Full uninstall = removing every SoD piece currently installed → also drop
     # the saved config so a future install starts clean.
     local remove_config=0
-    if [ ! -d "$SERVER/modules/mod-rune-engraving/.git" -o "$SEL_RUNE" -eq 1 ] \
-    && [ ! -d "$SERVER/modules/mod-sod-world/.git" -o "$SEL_WORLD" -eq 1 ] \
-    && [ ! -d "$SERVER/modules/mod-sod-mage/.git" -o "$SEL_MAGE" -eq 1 ]; then
+    if { [ ! -d "$SERVER/modules/mod-rune-engraving/.git" ] || [ "$SEL_RUNE" -eq 1 ]; } \
+    && { [ ! -d "$SERVER/modules/mod-sod-world/.git" ] || [ "$SEL_WORLD" -eq 1 ]; } \
+    && { [ ! -d "$SERVER/modules/mod-sod-mage/.git" ] || [ "$SEL_MAGE" -eq 1 ]; }; then
         remove_config=1
     fi
 

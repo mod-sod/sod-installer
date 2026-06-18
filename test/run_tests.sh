@@ -9,6 +9,12 @@
 #
 #   Usage: ./test/run_tests.sh        (exit 0 = all passed, 1 = failures)
 
+# Many globals below (the color vars, SEL_*/PRESET_*/BUILD_METHOD/… in reset_state
+# and per-test setup) are consumed by the *sourced* install.sh functions, not used
+# directly here; and stubbed helpers like ask_yn are invoked indirectly. Silence
+# the resulting false positives file-wide. (SC2317/SC2329 are the same "unreachable
+# / never invoked" complaint under different shellcheck versions.)
+# shellcheck disable=SC2034,SC2317,SC2329
 set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -20,11 +26,11 @@ source "$SCRIPT"
 PASS=0; FAIL=0
 ok_t() { printf '  ok   - %s\n' "$1"; PASS=$((PASS + 1)); }
 no_t() { printf '  FAIL - %s\n' "$1"; FAIL=$((FAIL + 1)); }
-assert_eq()           { [ "$1" = "$2" ] && ok_t "$3" || no_t "$3 (expected [$1], got [$2])"; }
+assert_eq()           { if [ "$1" = "$2" ]; then ok_t "$3"; else no_t "$3 (expected [$1], got [$2])"; fi; }
 assert_contains()     { case "$1" in *"$2"*) ok_t "$3" ;; *) no_t "$3 (missing [$2])" ;; esac; }
 assert_not_contains() { case "$1" in *"$2"*) no_t "$3 (unexpected [$2])" ;; *) ok_t "$3" ;; esac; }
-assert_absent()       { [ ! -e "$1" ] && ok_t "$2" || no_t "$2 ($1 still exists)"; }
-assert_present()      { [ -e "$1" ] && ok_t "$2" || no_t "$2 ($1 missing)"; }
+assert_absent()       { if [ ! -e "$1" ]; then ok_t "$2"; else no_t "$2 ($1 still exists)"; fi; }
+assert_present()      { if [ -e "$1" ]; then ok_t "$2"; else no_t "$2 ($1 missing)"; fi; }
 # cap <fn> [args…] — run in the CURRENT shell (so global side-effects persist,
 # unlike $(...)), capturing combined output into CAP.
 CAP=""
