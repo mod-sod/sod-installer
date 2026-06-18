@@ -1,5 +1,7 @@
 # sod-installer
 
+[![CI](https://github.com/bennybroseph/sod-installer/actions/workflows/ci.yml/badge.svg)](https://github.com/bennybroseph/sod-installer/actions/workflows/ci.yml)
+
 One-click installer for the **Season of Discovery** AzerothCore content and the
 **RuneEngraver** client addon. It clones the modules into your server, builds the
 client MPQ patches, and drops the addon into your WoW client — then you build the
