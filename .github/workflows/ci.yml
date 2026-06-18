@@ -11,7 +11,7 @@ jobs:
     name: shellcheck
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: shellcheck
         run: shellcheck install.sh test/run_tests.sh
 
@@ -19,7 +19,7 @@ jobs:
     name: unit + dry-run smoke
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Unit tests
         run: bash test/run_tests.sh
@@ -49,7 +49,7 @@ jobs:
     runs-on: ubuntu-latest
     continue-on-error: true   # a sibling-repo outage shouldn't fail the pipeline
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Real install (clones the public repos)
         run: |

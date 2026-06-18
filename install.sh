@@ -428,7 +428,11 @@ print_next_steps() {
 }
 
 # ── status overview ──────────────────────────────────────────────────────────
-clear_screen() { if command -v clear >/dev/null 2>&1; then clear; else printf '\033[2J\033[3J\033[H'; fi; }
+clear_screen() {
+    [ -t 1 ] || return 0          # only meaningful on an interactive terminal (skip in CI/logs)
+    if command -v clear >/dev/null 2>&1; then clear 2>/dev/null || printf '\033[2J\033[3J\033[H'
+    else printf '\033[2J\033[3J\033[H'; fi
+}
 
 print_banner() {
     printf '%s════════════════════════════════════════════════════════════%s\n' "$c_info" "$c_reset"
@@ -752,8 +756,10 @@ parse_args() {
 main() {
     parse_args "$@"
     # Support `curl … | bash`: stdin is the piped script, so reconnect it to the
-    # terminal (if there is one) so interactive prompts and the picker work.
-    [ -t 0 ] || { [ -r /dev/tty ] && exec < /dev/tty; }
+    # terminal so interactive prompts and the picker work. Reconnect only if a tty
+    # is actually openable — CI has no controlling terminal, and `[ -r /dev/tty ]`
+    # can pass there while the open still errors ("No such device or address").
+    if [ ! -t 0 ] && { : < /dev/tty; } 2>/dev/null; then exec < /dev/tty; fi
     setup_pkg_mgr
     startup
     case "$ACTION" in
