@@ -628,13 +628,11 @@ remove_addon() {
 
 # remove_patches: delete only our own generated MPQ; stock client data is never
 # touched. sod-client writes ONE consolidated patch, letter 'z', to BOTH the locale
-# chain (data/<locale>/patch-<locale>-z) and the base chain (data/patch-z). The
-# retired 'y' from the old per-module split is cleaned up too.
+# chain (data/<locale>/patch-<locale>-z) and the base chain (data/patch-z).
 remove_patches() {
     [ "$SEL_WORLD" -eq 1 ] || [ "$SEL_MAGE" -eq 1 ] || return 0
     local ed dd loc f; ed="$(enus_dir)"; dd="$(data_dir)"; loc="$(client_locale)"
-    for f in "$ed/patch-$loc-z.mpq" "$dd/patch-z.mpq" \
-             "$ed/patch-$loc-y.mpq" "$dd/patch-y.mpq"; do
+    for f in "$ed/patch-$loc-z.mpq" "$dd/patch-z.mpq"; do
         [ -f "$f" ] && { log "Removing client patch → $f"; run rm -f "$f"; }
     done
 }

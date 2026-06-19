@@ -144,15 +144,11 @@ t_remove_patches() {
     reset_state; local d out; d="$(mktemp -d)"
     CLIENT="$d"; mkdir -p "$d/data/enus"
     : > "$d/data/enus/patch-enus-z.mpq"; : > "$d/data/patch-z.mpq"   # consolidated
-    : > "$d/data/enus/patch-enus-y.mpq"; : > "$d/data/patch-y.mpq"   # legacy split
-    # One consolidated patch ('z') now; selecting any client-data module targets it,
-    # plus the retired 'y' is cleaned up.
+    # One consolidated patch ('z'); selecting any client-data module targets it.
     SEL_WORLD=1; SEL_MAGE=0
     out="$(remove_patches 2>&1)"
     assert_contains "$out" "patch-enus-z"     "remove_patches: consolidated locale patch targeted"
     assert_contains "$out" "$d/data/patch-z"  "remove_patches: consolidated base patch targeted"
-    assert_contains "$out" "patch-enus-y"     "remove_patches: legacy locale patch cleaned"
-    assert_contains "$out" "$d/data/patch-y"  "remove_patches: legacy base patch cleaned"
 
     # No client-data module selected -> no-op.
     reset_state; CLIENT="$d"; SEL_WORLD=0; SEL_MAGE=0
@@ -235,8 +231,8 @@ t_do_uninstall_real() {
     mkrepo "$srv/modules/mod-sod-world"
     mkrepo "$srv/modules/mod-sod-mage"
     mkrepo "$cli/Interface/AddOns/RuneEngraver"
-    : > "$cli/data/enus/patch-enus-y.mpq"; : > "$cli/data/enus/patch-enus-z.mpq"
-    : > "$cli/data/patch-y.mpq";           : > "$cli/data/patch-z.mpq"
+    : > "$cli/data/enus/patch-enus-z.mpq"
+    : > "$cli/data/patch-z.mpq"
     printf 'server=%s\nclient=%s\nbuild=source\n' "$srv" "$cli" > "$CONFIG_FILE"
 
     DRY_RUN=0; SERVER="$srv"; CLIENT="$cli"; BUILD_METHOD="source"; PRESET_COMPONENTS="all"
@@ -250,8 +246,6 @@ t_do_uninstall_real() {
     assert_absent "$cli/Interface/AddOns/RuneEngraver"     "do_uninstall: addon removed"
     assert_absent "$cli/data/enus/patch-enus-z.mpq"        "do_uninstall: consolidated locale patch removed"
     assert_absent "$cli/data/patch-z.mpq"                  "do_uninstall: consolidated base patch removed"
-    assert_absent "$cli/data/enus/patch-enus-y.mpq"        "do_uninstall: legacy locale patch cleaned"
-    assert_absent "$cli/data/patch-y.mpq"                  "do_uninstall: legacy base patch cleaned"
     assert_absent "$CONFIG_FILE"                           "do_uninstall: config removed (full clean)"
     rm -rf "$srv" "$cli"
 }
